@@ -1925,7 +1925,7 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
 
     _assert_(folder.Open(info, fun([&](std::streambuf &buffer, const void *flag) {
         plist_d(buffer, fun([&](plist_t node) {
-            executable = plist_s(plist_dict_get_item(node, "CFBundleExecutable"));
+            executable = "MacOS/" + plist_s(plist_dict_get_item(node, "CFBundleExecutable"));
             identifier = plist_s(plist_dict_get_item(node, "CFBundleIdentifier"));
         }));
     })), "open(): Info.plist");
@@ -1945,26 +1945,22 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
     }));
 
     if (true) {
-        rules1.insert(Rule{1, NoMode, "^"});
-        rules1.insert(Rule{10000, OmitMode, "^(Frameworks/[^/]+\\.framework/|PlugIns/[^/]+\\.appex/|PlugIns/[^/]+\\.appex/Frameworks/[^/]+\\.framework/|())SC_Info/[^/]+\\.(sinf|supf|supp)$"});
-        rules1.insert(Rule{1000, OptionalMode, "^.*\\.lproj/"});
-        rules1.insert(Rule{1100, OmitMode, "^.*\\.lproj/locversion.plist$"});
-        rules1.insert(Rule{10000, OmitMode, "^Watch/[^/]+\\.app/(Frameworks/[^/]+\\.framework/|PlugIns/[^/]+\\.appex/|PlugIns/[^/]+\\.appex/Frameworks/[^/]+\\.framework/)SC_Info/[^/]+\\.(sinf|supf|supp)$"});
+        rules1.insert(Rule{1, NoMode, "^Resources/"});
+        rules1.insert(Rule{1000, OptionalMode, "^Resources/.*\\.lproj/"});
+        rules1.insert(Rule{1100, OmitMode, "^Resources/.*\\.lproj/locversion.plist$"});
         rules1.insert(Rule{1, NoMode, "^version.plist$"});
     }
 
     if (true) {
         rules2.insert(Rule{11, NoMode, ".*\\.dSYM($|/)"});
-        rules2.insert(Rule{20, NoMode, "^"});
         rules2.insert(Rule{2000, OmitMode, "^(.*/)?\\.DS_Store$"});
-        rules2.insert(Rule{10000, OmitMode, "^(Frameworks/[^/]+\\.framework/|PlugIns/[^/]+\\.appex/|PlugIns/[^/]+\\.appex/Frameworks/[^/]+\\.framework/|())SC_Info/[^/]+\\.(sinf|supf|supp)$"});
         rules2.insert(Rule{10, NestedMode, "^(Frameworks|SharedFrameworks|PlugIns|Plug-ins|XPCServices|Helpers|MacOS|Library/(Automator|Spotlight|LoginItems))/"});
         rules2.insert(Rule{1, NoMode, "^.*"});
-        rules2.insert(Rule{1000, OptionalMode, "^.*\\.lproj/"});
-        rules2.insert(Rule{1100, OmitMode, "^.*\\.lproj/locversion.plist$"});
         rules2.insert(Rule{20, OmitMode, "^Info\\.plist$"});
         rules2.insert(Rule{20, OmitMode, "^PkgInfo$"});
-        rules2.insert(Rule{10000, OmitMode, "^Watch/[^/]+\\.app/(Frameworks/[^/]+\\.framework/|PlugIns/[^/]+\\.appex/|PlugIns/[^/]+\\.appex/Frameworks/[^/]+\\.framework/)SC_Info/[^/]+\\.(sinf|supf|supp)$"});
+        rules2.insert(Rule{20, NoMode, "^Resources/"});
+        rules2.insert(Rule{1000, OptionalMode, "^Resources/.*\\.lproj/"});
+        rules2.insert(Rule{1100, OmitMode, "^Resources/.*\\.lproj/locversion.plist$"});
         rules2.insert(Rule{10, NestedMode, "^[^/]+$"});
         rules2.insert(Rule{20, NoMode, "^embedded\\.provisionprofile$"});
         rules2.insert(Rule{20, NoMode, "^version\\.plist$"});
