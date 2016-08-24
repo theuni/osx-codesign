@@ -65,6 +65,12 @@
 #define LDID_SHA1_Init SHA1_Init
 #define LDID_SHA1_Update SHA1_Update
 #define LDID_SHA1_Final SHA1_Final
+#define LDID_SHA2_DIGEST_LENGTH SHA256_DIGEST_LENGTH
+#define LDID_SHA2 SHA256
+#define LDID_SHA2_CTX SHA256_CTX
+#define LDID_SHA2_Init SHA256_Init
+#define LDID_SHA2_Update SHA256_Update
+#define LDID_SHA2_Final SHA256_Final
 #endif
 
 #ifndef LDID_NOPLIST
@@ -780,6 +786,7 @@ class FatHeader :
 #define CSSLOT_SIGNATURESLOT uint32_t(0x10000)
 
 #define CS_HASHTYPE_SHA1 1
+#define CS_HASHTYPE_SHA2 2
 
 struct BlobIndex {
     uint32_t type;
@@ -816,6 +823,9 @@ struct CodeDirectory {
     uint64_t codeLimit64;
 } _packed;
 
+typedef std::array<char, LDID_SHA1_DIGEST_LENGTH> Sha1Array;
+typedef std::array<char, LDID_SHA2_DIGEST_LENGTH> Sha2Array;
+
 #ifndef LDID_NOFLAGT
 extern "C" uint32_t hash(uint8_t *k, uint32_t length, uint32_t initval);
 #endif
@@ -824,9 +834,16 @@ static void sha1(uint8_t *hash, const void *data, size_t size) {
     LDID_SHA1(static_cast<const uint8_t *>(data), size, hash);
 }
 
-static void sha1(std::vector<char> &hash, const void *data, size_t size) {
-    hash.resize(LDID_SHA1_DIGEST_LENGTH);
+static void sha2(uint8_t *hash, const void *data, size_t size) {
+    LDID_SHA2(static_cast<const uint8_t *>(data), size, hash);
+}
+
+static void sha1(Sha1Array &hash, const void *data, size_t size) {
     sha1(reinterpret_cast<uint8_t *>(hash.data()), data, size);
+}
+
+static void sha2(Sha2Array &hash, const void *data, size_t size) {
+    sha2(reinterpret_cast<uint8_t *>(hash.data()), data, size);
 }
 
 struct CodesignAllocation {
@@ -950,6 +967,11 @@ class Map {
 #endif
 
 namespace ldid {
+
+struct Hashes {
+    Sha1Array sha1 = {{0}};
+    Sha2Array sha2 = {{0}};
+};
 
 static void Allocate(const void *idata, size_t isize, std::streambuf &output, const Functor<size_t (const MachHeader &, size_t)> &allocate, const Functor<size_t (const MachHeader &, std::streambuf &output, size_t, const std::string &, const char *)> &save) {
     FatHeader source(const_cast<void *>(idata), isize);
@@ -1322,23 +1344,26 @@ class HashBuffer :
     public std::streambuf
 {
   private:
-    std::vector<char> &hash_;
-    LDID_SHA1_CTX context_;
+    ldid::Hashes &hashes_;
+    LDID_SHA1_CTX context1_;
+    LDID_SHA2_CTX context2_;
 
   public:
-    HashBuffer(std::vector<char> &hash) :
-        hash_(hash)
+    HashBuffer(ldid::Hashes &hashes) :
+        hashes_(hashes)
     {
-        LDID_SHA1_Init(&context_);
+        LDID_SHA1_Init(&context1_);
+        LDID_SHA2_Init(&context2_);
     }
 
     ~HashBuffer() {
-        hash_.resize(LDID_SHA1_DIGEST_LENGTH);
-        LDID_SHA1_Final(reinterpret_cast<uint8_t *>(hash_.data()), &context_);
+        LDID_SHA1_Final(reinterpret_cast<uint8_t *>(hashes_.sha1.data()), &context1_);
+        LDID_SHA2_Final(reinterpret_cast<uint8_t *>(hashes_.sha2.data()), &context2_);
     }
 
     virtual std::streamsize xsputn(const char_type *data, std::streamsize size) {
-        LDID_SHA1_Update(&context_, data, size);
+        LDID_SHA1_Update(&context1_, data, size);
+        LDID_SHA2_Update(&context2_, data, size);
         return size;
     }
 
@@ -1358,8 +1383,8 @@ class HashProxy :
     std::streambuf &buffer_;
 
   public:
-    HashProxy(std::vector<char> &hash, std::streambuf &buffer) :
-        HashBuffer(hash),
+    HashProxy(ldid::Hashes &hashes, std::streambuf &buffer) :
+        HashBuffer(hashes),
         buffer_(buffer)
     {
     }
@@ -1491,7 +1516,7 @@ void Sign(const void *idata, size_t isize, std::streambuf &output, const std::st
         }));
 
         uint32_t normal((size + PageSize_ - 1) / PageSize_);
-        alloc = Align(alloc + (special + normal) * LDID_SHA1_DIGEST_LENGTH, 16);
+        alloc = Align(alloc + (special + normal) * LDID_SHA2_DIGEST_LENGTH, 16);
         return alloc;
     }), fun([&](const MachHeader &mach_header, std::streambuf &output, size_t limit, const std::string &overlap, const char *top) -> size_t {
         Blobs blobs;
@@ -1517,8 +1542,10 @@ void Sign(const void *idata, size_t isize, std::streambuf &output, const std::st
             Slots posts(slots);
 
             mach_header.ForSection(fun([&](const char *segment, const char *section, void *data, size_t size) {
-                if (strcmp(segment, "__TEXT") == 0 && section != NULL && strcmp(section, "__info_plist") == 0)
-                    sha1(posts[CSSLOT_INFOSLOT], data, size);
+                if (strcmp(segment, "__TEXT") == 0 && section != NULL && strcmp(section, "__info_plist") == 0) {
+                    sha1(posts[CSSLOT_INFOSLOT].sha1, data, size);
+                    sha2(posts[CSSLOT_INFOSLOT].sha2, data, size);
+                }
             }));
 
             uint32_t special(0);
@@ -1534,8 +1561,8 @@ void Sign(const void *idata, size_t isize, std::streambuf &output, const std::st
             directory.nSpecialSlots = Swap(special);
             directory.codeLimit = Swap(uint32_t(limit));
             directory.nCodeSlots = Swap(normal);
-            directory.hashSize = LDID_SHA1_DIGEST_LENGTH;
-            directory.hashType = CS_HASHTYPE_SHA1;
+            directory.hashSize = LDID_SHA2_DIGEST_LENGTH;
+            directory.hashType = CS_HASHTYPE_SHA2;
             directory.spare1 = 0x00;
             directory.pageSize = PageShift_;
             directory.spare2 = Swap(uint32_t(0));
@@ -1555,35 +1582,35 @@ void Sign(const void *idata, size_t isize, std::streambuf &output, const std::st
                 offset += team.size() + 1;
             }
 
-            offset += LDID_SHA1_DIGEST_LENGTH * special;
+            offset += LDID_SHA2_DIGEST_LENGTH * special;
             directory.hashOffset = Swap(uint32_t(offset));
-            offset += LDID_SHA1_DIGEST_LENGTH * normal;
+            offset += LDID_SHA2_DIGEST_LENGTH * normal;
 
             put(data, &directory, sizeof(directory));
 
             put(data, identifier.c_str(), identifier.size() + 1);
             put(data, team.c_str(), team.size() + 1);
 
-            uint8_t storage[special + normal][LDID_SHA1_DIGEST_LENGTH];
-            uint8_t (*hashes)[LDID_SHA1_DIGEST_LENGTH] = storage + special;
+            uint8_t storage[special + normal][LDID_SHA2_DIGEST_LENGTH];
+            uint8_t (*hashes)[LDID_SHA2_DIGEST_LENGTH] = storage + special;
 
             memset(storage, 0, sizeof(*storage) * special);
 
             _foreach (blob, blobs) {
                 auto local(reinterpret_cast<const Blob *>(&blob.second[0]));
-                sha1((uint8_t *) (hashes - blob.first), local, Swap(local->length));
+                sha2((uint8_t *) (hashes - blob.first), local, Swap(local->length));
             }
 
             _foreach (slot, posts) {
-                _assert(sizeof(*hashes) == slot.second.size());
-                memcpy(hashes - slot.first, slot.second.data(), slot.second.size());
+                _assert(sizeof(*hashes) == slot.second.sha2.size());
+                memcpy(hashes - slot.first, slot.second.sha2.data(), slot.second.sha2.size());
             }
 
             if (normal != 1)
                 for (size_t i = 0; i != normal - 1; ++i)
-                    sha1(hashes[i], (PageSize_ * i < overlap.size() ? overlap.data() : top) + PageSize_ * i, PageSize_);
+                    sha2(hashes[i], (PageSize_ * i < overlap.size() ? overlap.data() : top) + PageSize_ * i, PageSize_);
             if (normal != 0)
-                sha1(hashes[normal - 1], top + PageSize_ * (normal - 1), ((limit - 1) % PageSize_) + 1);
+                sha2(hashes[normal - 1], top + PageSize_ * (normal - 1), ((limit - 1) % PageSize_) + 1);
 
             put(data, storage, sizeof(storage));
 
@@ -1907,7 +1934,7 @@ struct RuleCode {
 };
 
 #ifndef LDID_NOPLIST
-void Sign(std::streambuf &buffer, std::vector<char> &hash, std::streambuf &save, const std::string &identifier, const std::string &entitlements, const std::string &key, const Slots &slots) {
+void Sign(std::streambuf &buffer, Hashes &hash, std::streambuf &save, const std::string &identifier, const std::string &entitlements, const std::string &key, const Slots &slots) {
     // XXX: this is a miserable fail
     std::stringbuf temp;
     copy(buffer, temp);
@@ -1917,7 +1944,7 @@ void Sign(std::streambuf &buffer, std::vector<char> &hash, std::streambuf &save,
     Sign(data.data(), data.size(), proxy, identifier, entitlements, key, slots);
 }
 
-std::string Bundle(const std::string &root, Folder &folder, const std::string &key, std::map<std::string, std::vector<char>> &remote, const std::string &entitlements) {
+std::string Bundle(const std::string &root, Folder &folder, const std::string &key, std::map<std::string, Hashes> &remote, const std::string &entitlements) {
     std::string executable;
     std::string identifier;
 
@@ -1966,7 +1993,7 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
         rules2.insert(Rule{20, NoMode, "^version\\.plist$"});
     }
 
-    std::map<std::string, std::vector<char>> local;
+    std::map<std::string, Hashes> local;
 
     static Expression nested("^PlugIns/[^/]*\\.appex/Info\\.plist$");
     static Expression dylib("^[^/]*\\.dylib$");
@@ -1985,7 +2012,8 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
             return;
 
         auto &hash(local[name]);
-        if (!hash.empty())
+        static constexpr const Hashes empty_hashes{};
+        if (hash.sha1 != empty_hashes.sha1 || hash.sha2 != empty_hashes.sha2)
             return;
 
         code(fun([&](std::streambuf &data, std::streambuf &save) {
@@ -1998,7 +2026,8 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
             }
         }));
 
-        _assert(hash.size() == LDID_SHA1_DIGEST_LENGTH);
+        _assert(hash.sha1 != empty_hashes.sha1);
+        _assert(hash.sha2 != empty_hashes.sha2);
     }));
 
     auto plist(plist_new_dict());
@@ -2014,13 +2043,23 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
         for (const auto &hash : local)
             for (const auto &rule : version.second)
                 if (rule(hash.first)) {
-                    if (rule.mode_ == NoMode)
-                        plist_dict_set_item(files, hash.first.c_str(), plist_new_data(hash.second.data(), hash.second.size()));
-                    else if (rule.mode_ == OptionalMode) {
-                        auto entry(plist_new_dict());
-                        plist_dict_set_item(entry, "hash", plist_new_data(hash.second.data(), hash.second.size()));
-                        plist_dict_set_item(entry, "optional", plist_new_bool(true));
-                        plist_dict_set_item(files, hash.first.c_str(), entry);
+                    if(version.first.empty()) {
+                        if (rule.mode_ == NoMode)
+                            plist_dict_set_item(files, hash.first.c_str(), plist_new_data(hash.second.sha1.data(), hash.second.sha1.size()));
+                        else if (rule.mode_ == OptionalMode) {
+                            auto entry(plist_new_dict());
+                            plist_dict_set_item(entry, "hash", plist_new_data(hash.second.sha1.data(), hash.second.sha1.size()));
+                            plist_dict_set_item(entry, "optional", plist_new_bool(true));
+                            plist_dict_set_item(files, hash.first.c_str(), entry);
+                        }
+                    } else if (rule.mode_ != OmitMode) {
+                            // version 2+
+                            auto entry(plist_new_dict());
+                            plist_dict_set_item(entry, "hash", plist_new_data(hash.second.sha1.data(), hash.second.sha1.size()));
+                            plist_dict_set_item(entry, "hash2", plist_new_data(hash.second.sha2.data(), hash.second.sha2.size()));
+                            if (rule.mode_ == OptionalMode)
+                                plist_dict_set_item(entry, "optional", plist_new_bool(true));
+                            plist_dict_set_item(files, hash.first.c_str(), entry);
                     }
 
                     break;
@@ -2168,7 +2207,8 @@ int main(int argc, char *argv[]) {
                 char *arge;
                 unsigned number(strtoul(slot, &arge, 0));
                 _assert(arge == colon);
-                sha1(slots[number], file.data(), file.size());
+                sha1(slots[number].sha1, file.data(), file.size());
+                sha2(slots[number].sha2, file.data(), file.size());
             } break;
 
             case 'D': flag_D = true; break;
@@ -2255,7 +2295,7 @@ int main(int argc, char *argv[]) {
 #ifndef LDID_NOPLIST
             _assert(!flag_r);
             ldid::DiskFolder folder(path);
-            std::map<std::string, std::vector<char>> hashes;
+            std::map<std::string, ldid::Hashes> hashes;
             path += "/" + Bundle("", folder, key, hashes, entitlements);
 #else
             _assert(false);
