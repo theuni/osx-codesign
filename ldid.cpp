@@ -1454,7 +1454,7 @@ static void Commit(const std::string &path, const std::string &temp) {
 
 namespace ldid {
 
-void Sign(const void *idata, size_t isize, std::streambuf &output, const std::string &identifier, const std::string &entitlements, const std::string &key, const Slots &slots) {
+void Sign(const void *idata, size_t isize, std::streambuf &output, const std::string &identifier, const std::string &requirements, const std::string &entitlements, const std::string &key, const Slots &slots) {
     std::string team;
 
 #ifndef LDID_NOSMIME
@@ -1480,9 +1480,11 @@ void Sign(const void *idata, size_t isize, std::streambuf &output, const std::st
 
         uint32_t special(0);
 
-        special = std::max(special, CSSLOT_REQUIREMENTS);
-        alloc += sizeof(struct BlobIndex);
-        alloc += 0xc;
+        if(!requirements.empty()) {
+            special = std::max(special, CSSLOT_REQUIREMENTS);
+            alloc += sizeof(struct BlobIndex);
+            alloc += requirements.size();
+        }
 
         if (!entitlements.empty()) {
             special = std::max(special, CSSLOT_ENTITLEMENTS);
@@ -1521,12 +1523,9 @@ void Sign(const void *idata, size_t isize, std::streambuf &output, const std::st
     }), fun([&](const MachHeader &mach_header, std::streambuf &output, size_t limit, const std::string &overlap, const char *top) -> size_t {
         Blobs blobs;
 
-        if (true) {
+        if (!requirements.empty()) {
             std::stringbuf data;
-
-            Blobs requirements;
-            put(data, CSMAGIC_REQUIREMENTS, requirements);
-
+            put(data, requirements.data(), requirements.size());
             insert(blobs, CSSLOT_REQUIREMENTS, data);
         }
 
@@ -1934,17 +1933,17 @@ struct RuleCode {
 };
 
 #ifndef LDID_NOPLIST
-void Sign(std::streambuf &buffer, Hashes &hash, std::streambuf &save, const std::string &identifier, const std::string &entitlements, const std::string &key, const Slots &slots) {
+void Sign(std::streambuf &buffer, Hashes &hash, std::streambuf &save, const std::string &identifier, const std::string& requirements, const std::string &entitlements, const std::string &key, const Slots &slots) {
     // XXX: this is a miserable fail
     std::stringbuf temp;
     copy(buffer, temp);
     auto data(temp.str());
 
     HashProxy proxy(hash, save);
-    Sign(data.data(), data.size(), proxy, identifier, entitlements, key, slots);
+    Sign(data.data(), data.size(), proxy, identifier, requirements, entitlements, key, slots);
 }
 
-std::string Bundle(const std::string &root, Folder &folder, const std::string &key, std::map<std::string, Hashes> &remote, const std::string &entitlements) {
+std::string Bundle(const std::string &root, Folder &folder, const std::string &key, std::map<std::string, Hashes> &remote, const std::string& requirements, const std::string &entitlements) {
     std::string executable;
     std::string identifier;
 
@@ -2003,7 +2002,7 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
             return;
         auto bundle(root + Split(name).dir);
         SubFolder subfolder(folder, bundle);
-        Bundle(bundle, subfolder, key, local, "");
+        Bundle(bundle, subfolder, key, local, "", "");
     }));
 
     folder.Find("", fun([&](const std::string &name, const Functor<void (const Functor<void (std::streambuf &, std::streambuf &)> &)> &code) {
@@ -2019,7 +2018,7 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
         code(fun([&](std::streambuf &data, std::streambuf &save) {
             if (dylib(name)) {
                 Slots slots;
-                Sign(data, hash, save, identifier, "", key, slots);
+                Sign(data, hash, save, identifier, "", "", key, slots);
             } else {
                 HashProxy proxy(hash, save);
                 copy(data, proxy);
@@ -2119,7 +2118,7 @@ std::string Bundle(const std::string &root, Folder &folder, const std::string &k
             Slots slots;
             slots[1] = local.at(info);
             slots[3] = local.at(signature);
-            Sign(buffer, local[executable], save, identifier, entitlements, key, slots);
+            Sign(buffer, local[executable], save, identifier, requirements, entitlements, key, slots);
         }));
     }));
 
@@ -2174,6 +2173,7 @@ int main(int argc, char *argv[]) {
 #endif
 
     Map entitlements;
+    Map requirements;
     Map key;
     ldid::Slots slots;
 
@@ -2229,7 +2229,14 @@ int main(int argc, char *argv[]) {
                     _assert(arge == argv[argi] + strlen(argv[argi]));
                 }
             break;
-
+            case 'R':
+                _assert(!flag_r);
+                _assert(!flag_s);
+                if (argv[argi][2] != '\0') {
+                    const char *bin = argv[argi] + 2;
+                    requirements.open(bin, O_RDONLY, PROT_READ, MAP_PRIVATE);
+                }
+            break;
             case 's':
                 _assert(!flag_r);
                 _assert(!flag_S);
@@ -2296,7 +2303,7 @@ int main(int argc, char *argv[]) {
             _assert(!flag_r);
             ldid::DiskFolder folder(path);
             std::map<std::string, ldid::Hashes> hashes;
-            path += "/" + Bundle("", folder, key, hashes, entitlements);
+            path += "/" + Bundle("", folder, key, hashes, requirements, entitlements);
 #else
             _assert(false);
 #endif
@@ -2311,7 +2318,7 @@ int main(int argc, char *argv[]) {
                 ldid::Unsign(input.data(), input.size(), output);
             else {
                 std::string identifier(flag_I ?: split.base.c_str());
-                ldid::Sign(input.data(), input.size(), output, identifier, entitlements, key, slots);
+                ldid::Sign(input.data(), input.size(), output, identifier, requirements, entitlements, key, slots);
             }
 
             Commit(path, temp);

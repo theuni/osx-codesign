@@ -140,11 +140,11 @@ class UnionFolder :
 };
 
 struct Hashes;
-std::string Bundle(const std::string &root, Folder &folder, const std::string &key, std::map<std::string, Hashes> &remote, const std::string &entitlements);
+std::string Bundle(const std::string &root, Folder &folder, const std::string &key, std::map<std::string, Hashes> &remote, const std::string &requirements, const std::string &entitlements);
 
 typedef std::map<uint32_t, Hashes> Slots;
 
-void Sign(const void *idata, size_t isize, std::streambuf &output, const std::string &identifier, const std::string &entitlements, const std::string &key, const Slots &slots);
+void Sign(const void *idata, size_t isize, std::streambuf &output, const std::string &identifier, const std::string &requirements, const std::string &entitlements, const std::string &key, const Slots &slots);
 
 }
 
